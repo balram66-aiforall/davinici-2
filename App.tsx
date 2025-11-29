@@ -1,8 +1,7 @@
-
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { generateProfessionalHeadshot } from './services/geminiService';
 import { fileToDataUrl, parseDataUrl } from './utils/fileUtils';
-import { PlusIcon, MagicWandIcon, StylesIcon, StudioIcon, FeedIcon, CloseIcon, EditIcon, DownloadIcon, GoogleIcon } from './components/icons';
+import { PlusIcon, MagicWandIcon, StylesIcon, CloseIcon, EditIcon, DownloadIcon, GoogleIcon } from './components/icons';
 import Spinner from './components/Spinner';
 import { styles, PhotoStyle } from './styles';
 
@@ -16,7 +15,8 @@ declare global {
     openSelectKey: () => Promise<void>;
   }
   interface Window {
-    aistudio: AIStudio;
+    // FIX: Made `aistudio` optional to resolve "All declarations of 'aistudio' must have identical modifiers" error.
+    aistudio?: AIStudio;
   }
 }
 
@@ -30,6 +30,7 @@ const App: React.FC = () => {
   const [fileInfo, setFileInfo] = useState<{ mimeType: string; base64Data: string } | null>(null);
   const [isStylePanelOpen, setIsStylePanelOpen] = useState(false);
   const [isPromptEditorOpen, setIsPromptEditorOpen] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [isCheckingKey, setIsCheckingKey] = useState<boolean>(true);
   const [isKeyReady, setIsKeyReady] = useState<boolean>(false);
@@ -37,11 +38,19 @@ const App: React.FC = () => {
   useEffect(() => {
     const checkApiKey = async () => {
       try {
-        const hasKey = await window.aistudio.hasSelectedApiKey();
-        setIsKeyReady(hasKey);
+        // If running in AI Studio, use its authentication check.
+        if (window.aistudio) {
+          const hasKey = await window.aistudio.hasSelectedApiKey();
+          setIsKeyReady(!!hasKey);
+        } else {
+          // If running on Vercel/Standalone, assume the API key is provided via env vars.
+          // This bypasses the specific AI Studio sign-in screen.
+          setIsKeyReady(true);
+        }
       } catch (e) {
         console.error("Error checking for API key:", e);
-        setIsKeyReady(false);
+        // On error (or standalone), allow access to the app so user can try to generate.
+        setIsKeyReady(true);
       } finally {
         setIsCheckingKey(false);
       }
@@ -50,14 +59,16 @@ const App: React.FC = () => {
   }, []);
 
   const handleSignIn = async () => {
-    try {
-      await window.aistudio.openSelectKey();
-      // Assume success and update UI immediately to avoid race conditions.
-      // The user is now free to use the app.
-      setIsKeyReady(true);
-    } catch (e) {
-      console.error("Failed to open select key dialog", e);
-      setError("Could not open the sign-in dialog. Please try again.");
+    // This function is only relevant if window.aistudio exists.
+    if (window.aistudio) {
+      try {
+        await window.aistudio.openSelectKey();
+        // Assume success and update UI immediately to avoid race conditions.
+        setIsKeyReady(true);
+      } catch (e) {
+        console.error("Failed to open select key dialog", e);
+        setError("Could not open the sign-in dialog. Please try again.");
+      }
     }
   };
 
@@ -100,7 +111,10 @@ const App: React.FC = () => {
       const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred.';
        if (errorMessage.includes('Requested entity was not found')) {
             setError('Your session has expired or the API key is invalid. Please sign in again.');
-            setIsKeyReady(false); // Force re-authentication
+            // Only force re-auth if in AI Studio environment
+            if (window.aistudio) {
+                setIsKeyReady(false); 
+            }
         } else {
             setError(`Generation failed: ${errorMessage}`);
         }
@@ -175,6 +189,8 @@ const App: React.FC = () => {
         {/* Background Gradients */}
         <div className="absolute top-0 left-0 -translate-x-1/4 -translate-y-1/4 w-96 h-96 bg-purple-500/20 rounded-full filter blur-3xl opacity-50"></div>
         <div className="absolute bottom-0 right-0 translate-x-1/4 translate-y-1/4 w-96 h-96 bg-blue-500/20 rounded-full filter blur-3xl opacity-50"></div>
+      
+      <input id="file-upload" ref={fileInputRef} type="file" className="hidden" accept="image/png, image/jpeg, image/webp, image/heic, image/heif" onChange={handleImageChange} />
 
       <header className="text-center p-6 z-10">
         <p className="text-lg text-white/70 mb-1">AI FOR ALL</p>
@@ -189,25 +205,32 @@ const App: React.FC = () => {
             <label htmlFor="file-upload" className="w-48 h-48 sm:w-64 sm:h-64 bg-white/5 border-2 border-dashed border-white/20 rounded-full flex items-center justify-center cursor-pointer hover:bg-white/10 hover:border-white/40 transition-all duration-300">
               <PlusIcon className="w-16 h-16 text-white/40" />
             </label>
-            <input id="file-upload" type="file" className="hidden" accept="image/png, image/jpeg, image/webp, image/heic, image/heif" onChange={handleImageChange} />
              <p className="text-white/60 mt-6">Upload a photo to start</p>
           </div>
         ) : (
-          <div className="relative w-[280px] h-[360px] sm:w-[320px] sm:h-[420px]">
-            {isLoading && (
-              <div className="absolute inset-0 bg-black/70 flex flex-col items-center justify-center z-20 rounded-3xl">
-                <Spinner />
-                <p className="text-gray-300 mt-4 text-lg">Generating...</p>
+          <div className="flex flex-col items-center">
+            <div className="relative w-[280px] h-[360px] sm:w-[320px] sm:h-[420px]">
+              {isLoading && (
+                <div className="absolute inset-0 bg-black/70 flex flex-col items-center justify-center z-20 rounded-3xl">
+                  <Spinner />
+                  <p className="text-gray-300 mt-4 text-lg">Generating...</p>
+                </div>
+              )}
+              {currentImage && <img src={currentImage} alt="User photo" className="object-cover w-full h-full rounded-3xl shadow-2xl" />}
+              {/* Face Frame */}
+              <div className="absolute inset-0 pointer-events-none">
+                <div className="absolute top-8 left-8 w-12 h-12 border-t-4 border-l-4 border-white/80 rounded-tl-2xl"></div>
+                <div className="absolute top-8 right-8 w-12 h-12 border-t-4 border-r-4 border-white/80 rounded-tr-2xl"></div>
+                <div className="absolute bottom-8 left-8 w-12 h-12 border-b-4 border-l-4 border-white/80 rounded-bl-2xl"></div>
+                <div className="absolute bottom-8 right-8 w-12 h-12 border-b-4 border-r-4 border-white/80 rounded-br-2xl"></div>
               </div>
-            )}
-            {currentImage && <img src={currentImage} alt="User photo" className="object-cover w-full h-full rounded-3xl shadow-2xl" />}
-             {/* Face Frame */}
-            <div className="absolute inset-0 pointer-events-none">
-              <div className="absolute top-8 left-8 w-12 h-12 border-t-4 border-l-4 border-white/80 rounded-tl-2xl"></div>
-              <div className="absolute top-8 right-8 w-12 h-12 border-t-4 border-r-4 border-white/80 rounded-tr-2xl"></div>
-              <div className="absolute bottom-8 left-8 w-12 h-12 border-b-4 border-l-4 border-white/80 rounded-bl-2xl"></div>
-              <div className="absolute bottom-8 right-8 w-12 h-12 border-b-4 border-r-4 border-white/80 rounded-br-2xl"></div>
             </div>
+            <button
+                onClick={() => fileInputRef.current?.click()}
+                className="mt-4 text-indigo-400 hover:text-indigo-300 transition-colors font-semibold"
+            >
+                Change Photo
+            </button>
           </div>
         )}
         {error && (
@@ -251,18 +274,10 @@ const App: React.FC = () => {
             </button>
           </div>
 
-          <nav className="bg-black/30 backdrop-blur-md rounded-full p-2 flex justify-around items-center">
-            <button className="text-gray-500 flex flex-col items-center gap-1 px-3 py-1 rounded-full">
-                <FeedIcon className="w-6 h-6"/>
-                <span className="text-xs">Feed</span>
-            </button>
+          <nav className="bg-black/30 backdrop-blur-md rounded-full p-2 flex justify-center items-center">
             <button onClick={() => setIsStylePanelOpen(true)} className="text-white flex flex-col items-center gap-1 px-3 py-1 rounded-full">
                 <StylesIcon className="w-6 h-6"/>
                 <span className="text-xs">Styles</span>
-            </button>
-             <button className="text-pink-500 flex flex-col items-center gap-1 px-3 py-1 rounded-full">
-                <StudioIcon className="w-6 h-6"/>
-                <span className="text-xs font-bold">Studio</span>
             </button>
           </nav>
         </div>
